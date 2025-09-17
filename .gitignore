@@ -46,3 +46,4 @@ jest-html-reporters-*.html
 secrets.json
 config.local.js
 ProductionCertificate.cer
+*.cer
