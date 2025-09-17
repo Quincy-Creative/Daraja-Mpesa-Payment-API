@@ -10,19 +10,24 @@ const router = express.Router();
 
 const darajaAuthMiddleware = require("../middlewares/darajaAuthMiddleware");
 const {
-  sendStkPush,
-  handleCallback,
-  stkQuery,
-  b2cPayment,
-  b2cQueueTimeout,
-  b2cResult,
-  b2cAccountBalance,
-  accountBalanceResult,
-  accountBalanceQueueTimeout,
-  checkB2CTransactionStatus,
-  b2cCheckTransactionQueueTimeout,
-  b2cCheckTransactionResult
+	sendStkPush,
+	handleCallback,
+	stkQuery,
+	b2cPayment,
+	b2cQueueTimeout,
+	b2cResult,
+	b2cAccountBalance,
+	accountBalanceResult,
+	accountBalanceQueueTimeout,
+	checkB2CTransactionStatus,
+	b2cCheckTransactionQueueTimeout,
+	b2cCheckTransactionResult
 } = require("../controllers/paymentController");
+
+// Health check endpoint for payment routes - welcome message
+router.get('/welcome', (req, res) => {
+	res.status(200).json({message: 'Hello from Payment Routes - Mystay Daraja API'});
+});
 
 /**
  * POST /api/v1/payment/send-stk-push
