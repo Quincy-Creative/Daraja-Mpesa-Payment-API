@@ -45,3 +45,4 @@ jest-html-reporters-*.html
 # Optional: ignore custom secrets/config files
 secrets.json
 config.local.js
+ProductionCertificate.cer
