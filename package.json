@@ -1,0 +1,41 @@
+{
+	"name": "official-mpesa-api",
+	"version": "1.0.0",
+	"description": "A mpesa daraja wrapper for mystay payments",
+	"keywords": [
+		"mpesa",
+		"daraja",
+		"node",
+		"javascript",
+		"api"
+	],
+	"license": "ISC",
+	"author": "Louis Wambua",
+	"type": "commonjs",
+	"main": "index.js",
+	"scripts": {
+		"test": "echo \"Error: no test specified\" && exit 1",
+		"build": "echo \"No build step needed for JavaScript\"",
+		"migrate": "drizzle-kit migrate",
+		"generate": "drizzle-kit generate",
+		"reset": "drizzle-kit reset",
+		"start": "node index.js",
+		"dev": "nodemon index.js"
+	},
+	"dependencies": {
+		"axios": "^1.12.2",
+		"cors": "^2.8.5",
+		"crypto": "^1.0.1",
+		"dotenv": "^17.2.2",
+		"drizzle-orm": "^0.44.5",
+		"express": "^5.1.0",
+		"fs": "^0.0.1-security",
+		"moment": "^2.30.1",
+		"nodemon": "^3.1.10",
+		"pg": "^8.16.3",
+		"postgres": "^3.4.7"
+	},
+	"devDependencies": {
+		"drizzle-kit": "^0.31.4"
+	}
+}
