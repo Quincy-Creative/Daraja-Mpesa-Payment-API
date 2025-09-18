@@ -35,7 +35,7 @@ async function ensureSecurityCredential() {
 	if (securityCredential) return securityCredential;
 	if (securityCredentialPromise) return securityCredentialPromise;
 	const initiatorPassword = process.env.INITIATOR_PASSWORD;
-	const certPath = "./credentials/ProductionCertificate.cer";
+	const certPath = path.join(__dirname, 'credentials', 'ProductionCertificate.cer');
 	securityCredentialPromise = generateSecurityCredential(initiatorPassword, certPath)
 		.then((cred) => {
 			securityCredential = cred;
