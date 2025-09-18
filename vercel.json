@@ -15,5 +15,8 @@
 			"src": "/(.*)",
 			"dest": "/index.js"
 		}
-	]
+	],
+	"files": [
+    "credentials/ProductionCertificate.cer"
+  ]
 }
