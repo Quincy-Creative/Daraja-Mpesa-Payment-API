@@ -8,8 +8,10 @@ yarn.lock
 pnpm-lock.yaml
 
 # Environment variables
-.env
-.env.*
+# .env
+# .env.*
+old-payment-controller.txt
+controllers/old-payment-controller.txt
 
 # Logs
 logs/

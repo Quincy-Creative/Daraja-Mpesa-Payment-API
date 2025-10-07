@@ -1,17 +1,31 @@
-// db/client.js
-// CommonJS style - requires the postgres.js client, then creates a drizzle instance.
-const sql = require('./pg');
+/**
+ * db/client.js
+ *
+ * This file sets up and exports the database client for the application.
+ * It initializes the connection to the PostgreSQL database using the Postgres.js client,
+ * and integrates it with Drizzle ORM for type-safe query building and migrations.
+ *
+ * Exports:
+ *   - sql: The raw Postgres.js client instance for direct SQL queries.
+ *   - db: The Drizzle ORM instance for structured and type-safe database operations.
+ *
+ * If Drizzle's postgres-js adapter cannot be required (e.g., due to ESM/CJS issues),
+ * an error is thrown with instructions for resolving the import problem.
+ */
+
+
+const sql = require("./pg");
 
 // Try to require drizzle-orm's postgres-js adapter.
 // If your drizzle install is ESM-only this require might fail; see bottom notes for fallback.
 let db;
 try {
-	// If this works, drizzle supports CJS in your environment
-	const { drizzle } = require('drizzle-orm/postgres-js');
+	const { drizzle } = require("drizzle-orm/postgres-js");
 	db = drizzle(sql);
 } catch (err) {
-	// We'll throw a clearer error telling you how to fix (see fallback note below).
-	console.error('Could not require drizzle-orm/postgres-js directly. If you see an ESM error, please use the dynamic import fallback described in the README or set "type": "module" in package.json.');
+	console.error(
+		"Could not require drizzle-orm/postgres-js directly. If you see an ESM error, please use the dynamic import fallback described in the README or set \"type\": \"module\" in package.json."
+	);
 	throw err;
 }
 
