@@ -18,6 +18,7 @@ const path = require("path");
 const {
 	stk_payments,
 	b2c_payouts,
+	mpesa_refunds,
 	booking_transactions,
 	bookings,
 	profiles,
@@ -653,6 +654,272 @@ const b2cPayment = async (req, res) => {
 };
 
 // --------------------------------------------------
+// guestRefund - initiate B2C refund to guest
+// --------------------------------------------------
+const guestRefund = async (req, res) => {
+	try {
+		const { phoneNumber, amount, guest_id, remarks } = req.body;
+		if (!phoneNumber || !amount || !guest_id) {
+			return res.status(400).json({ success: false, error: 'phoneNumber, amount, guest_id required' });
+		}
+
+		const formattedPhone = phoneNumber.startsWith('0') ? `254${phoneNumber.slice(1)}` : phoneNumber;
+
+		// Ensure security credential
+		let securityCred;
+		try {
+			securityCred = await ensureSecurityCredential();
+		} catch (err) {
+			console.error('Security credential generation failed:', err?.message || err);
+			return res.status(500).json({ success: false, error: 'Failed to generate security credential' });
+		}
+
+		const localRequestId = generateId();
+
+		const requestBody = {
+			InitiatorName: process.env.INITIATOR_NAME,
+			SecurityCredential: securityCred,
+			CommandID: 'BusinessPayment',
+			Amount: amount,
+			PartyA: process.env.SHORTCODE,
+			PartyB: formattedPhone,
+			Remarks: remarks || `Refund for guest ${guest_id}`,
+			QueueTimeOutURL: process.env.REFUND_QUEUE_TIMEOUT_URL || process.env.B2C_QUEUE_TIMEOUT_URL,
+			ResultURL: process.env.REFUND_RESULT_URL || process.env.B2C_RESULT_URL,
+			Occasion: `Refund-${localRequestId}`,
+		};
+
+		// Call Daraja
+		const response = await axios.post(
+			`${process.env.BASE_URL}/mpesa/b2c/v1/paymentrequest`,
+			requestBody,
+			{
+				headers: { Authorization: `Bearer ${req.darajaToken}` },
+				timeout: 20000,
+			}
+		);
+
+		const remote = response.data || {};
+
+		// Many daraja responses use "ResponseCode" either as string "0" or number 0
+		const responseCode = String(remote.ResponseCode ?? remote.responseCode ?? '');
+		const responseDesc = remote.ResponseDescription ?? remote.ResponseDesc ?? remote.ResponseDescription ?? '';
+
+		// If initiation failed, do not insert anything. Return error to caller with code.
+		if (responseCode !== '0') {
+			return res.status(400).json({
+				success: false,
+				code: responseCode,
+				message: responseDesc || 'Refund initiation failed',
+				daraja: remote,
+			});
+		}
+
+		// At this point initiation accepted by Daraja. Persist a minimal row including conversation IDs.
+		const originator = remote.OriginatorConversationID ?? remote.originatorConversationID ?? null;
+		const conversation = remote.ConversationID ?? remote.conversationID ?? null;
+
+		let insertedRow = null;
+		try {
+			// Insert minimal row containing guest_id, amount, receiverPhoneNumber and the conversation ids
+			await db.insert(mpesa_refunds).values({
+				guest_id,
+				receiverPhoneNumber: formattedPhone,
+				originator_conversation_id: originator,
+				conversation_id: conversation,
+				transaction_id: null,
+				transaction_receipt: null,
+				amount,
+				receiver_name: null,
+				completed_at: null,
+				b2c_recipient_is_registered: null,
+				b2c_charges_paid_funds: null,
+				result_code: null,
+				result_desc: null,
+				status: 'pending',
+				created_at: new Date(),
+				updated_at: new Date(),
+			});
+
+			// fetch inserted row to return its id (some Drizzle builds don't return inserted rows)
+			const rows = await db
+				.select()
+				.from(mpesa_refunds)
+				.where(eq(mpesa_refunds.originator_conversation_id, originator))
+				.limit(1);
+
+			if (rows && rows.length) insertedRow = rows[0];
+		} catch (err) {
+			console.error('Failed to insert mpesa_refunds after successful initiation:', err?.message || err);
+			// We still return success since Daraja accepted the request, but inform client that DB insert failed
+			return res.status(200).json({
+				success: true,
+				initiated: true,
+				persisted: false,
+				daraja: remote,
+				error: 'Failed to persist mpesa_refunds row (check server logs).',
+			});
+		}
+
+		return res.status(200).json({
+			success: true,
+			initiated: true,
+			persisted: !!insertedRow,
+			refundId: insertedRow?.id ?? null,
+			daraja: remote,
+		});
+	} catch (err) {
+		console.error('guestRefund error:', err?.response?.data || err.message || err);
+		return res.status(500).json({ success: false, error: err?.response?.data || err.message || String(err) });
+	}
+};
+
+// --------------------------------------------------
+// guestRefundResult - handle B2C refund result callback
+// --------------------------------------------------
+const guestRefundResult = async (req, res) => {
+	try {
+		const received = req.body;
+		console.log('Guest Refund Result received:', JSON.stringify(received, null, 2));
+
+		const result = received?.Result || received?.data?.Result || received;
+		if (!result || typeof result !== 'object') {
+			console.warn('Invalid refund result payload:', received);
+			// respond 200 to Daraja; client can check logs / UI for details
+			return res.status(200).json({ success: false, message: 'Invalid refund result payload' });
+		}
+
+		const { OriginatorConversationID, ConversationID, TransactionID } = result;
+		const ResultParameters = result.ResultParameters || {};
+		const paramsArray = ResultParameters?.ResultParameter || [];
+		const params = {};
+		for (const p of paramsArray) params[p.Key] = p.Value;
+
+		// Normalize common names/values
+		const resultCode = Number(result.ResultCode ?? params.ResultCode ?? 0);
+		const resultDesc = result.ResultDesc ?? params.ResultDesc ?? '';
+
+		// Transaction amount may be under different keys
+		const amount = Number(params.TransactionAmount ?? params.Amount ?? 0);
+		const transactionReceipt = params.TransactionReceipt ?? params.ReceiptNo ?? TransactionID ?? null;
+		const receiverName = params.ReceiverPartyPublicName ?? params.CreditPartyName ?? '';
+		const completedAtRaw = params.TransactionCompletedDateTime ?? params.FinalisedTime ?? params.InitiatedTime ?? null;
+		const completedAt = completedAtRaw ? parseMpesaTimestamp(completedAtRaw) : new Date();
+
+		const recipientRegistered = String(params.B2CRecipientIsRegisteredCustomer ?? '').toUpperCase() === 'Y';
+		const chargesPaidFunds = Number(params.B2CChargesPaidAccountAvailableFunds ?? params.B2CChargesPaidAccountAvailableFunds ?? 0);
+
+		// Find the associated mpesa_refunds row (expect it to exist because we inserted on initiation success)
+		let refundRow = null;
+		try {
+			if (OriginatorConversationID) {
+				const rows = await db.select().from(mpesa_refunds).where(eq(mpesa_refunds.originator_conversation_id, OriginatorConversationID)).limit(1);
+				if (rows && rows.length) refundRow = rows[0];
+			}
+			if (!refundRow && ConversationID) {
+				const rows2 = await db.select().from(mpesa_refunds).where(eq(mpesa_refunds.conversation_id, ConversationID)).limit(1);
+				if (rows2 && rows2.length) refundRow = rows2[0];
+			}
+			// fallback: try match by receiverPhoneNumber + amount for the most recent uncompleted row
+			if (!refundRow && receiverName) {
+				const phoneToken = String(receiverName).split(/\s|-/)[0] || null;
+				const cleanPhone = phoneToken ? phoneToken.replace(/\D/g, '') : null;
+				if (cleanPhone) {
+					const rows3 = await db
+						.select()
+						.from(mpesa_refunds)
+						.where(eq(mpesa_refunds.receiverPhoneNumber, cleanPhone))
+						.where(eq(mpesa_refunds.amount, amount))
+						.where(eq(mpesa_refunds.result_code, null))
+						.orderBy(sql`created_at DESC`)
+						.limit(1);
+					if (rows3 && rows3.length) refundRow = rows3[0];
+				}
+			}
+		} catch (err) {
+			console.error('Error finding mpesa_refunds row in callback:', err?.message || err);
+		}
+
+		if (!refundRow) {
+			console.warn('No matching mpesa_refunds row found for callback. Originator/Conversation/Receiver/Amount:', {
+				OriginatorConversationID,
+				ConversationID,
+				receiverName,
+				amount,
+			});
+			// Must ACK Daraja with 200; report to logs / UI for manual reconciliation
+			return res.status(200).json({
+				success: resultCode === 0,
+				code: resultCode,
+				message: resultDesc,
+				persisted: false,
+				note: 'No matching mpesa_refunds row found to update. Check initiation step.',
+			});
+		}
+
+		// Idempotency: if transaction_id already recorded, skip
+		try {
+			const existing = await db.select().from(mpesa_refunds).where(eq(mpesa_refunds.transaction_id, TransactionID)).limit(1);
+			if (existing && existing.length) {
+				console.log('Duplicate refund result already processed:', TransactionID);
+				return res.status(200).json({ success: true, code: resultCode, message: 'Already processed', persisted: true });
+			}
+		} catch (err) {
+			console.error('Error checking existing transaction id in mpesa_refunds:', err?.message || err);
+			// continue
+		}
+
+		// Determine status based on result code
+		const status = resultCode === 0 ? 'refunded' : 'failed';
+
+		// If the resultCode is success (0) we write the detailed fields; otherwise write only result_code/result_desc for audit.
+		if (resultCode === 0) {
+			try {
+				await db.update(mpesa_refunds)
+					.set({
+						transaction_id: TransactionID ?? refundRow.transaction_id,
+						transaction_receipt: transactionReceipt ?? refundRow.transaction_receipt,
+						receiver_name: receiverName ?? refundRow.receiver_name,
+						completed_at: completedAt ?? refundRow.completed_at,
+						b2c_recipient_is_registered: recipientRegistered,
+						b2c_charges_paid_funds: chargesPaidFunds,
+						result_code: resultCode,
+						result_desc: resultDesc,
+						status: status,
+						updated_at: new Date(),
+					})
+					.where(eq(mpesa_refunds.id, refundRow.id));
+			} catch (err) {
+				console.error('Failed to update mpesa_refunds with success result:', err?.message || err);
+				return res.status(200).json({ success: false, code: resultCode, message: resultDesc, persisted: false, error: String(err?.message || err) });
+			}
+
+			return res.status(200).json({ success: true, code: resultCode, message: resultDesc, persisted: true, refundId: refundRow.id });
+		} else {
+			// persist result_code/result_desc for failed/partial requests (audit)
+			try {
+				await db.update(mpesa_refunds)
+					.set({
+						result_code: resultCode,
+						result_desc: resultDesc,
+						status: status,
+						updated_at: new Date(),
+					})
+					.where(eq(mpesa_refunds.id, refundRow.id));
+			} catch (err) {
+				console.error('Failed to update mpesa_refunds with failure result:', err?.message || err);
+				return res.status(200).json({ success: false, code: resultCode, message: resultDesc, persisted: false, error: String(err?.message || err) });
+			}
+
+			return res.status(200).json({ success: false, code: resultCode, message: resultDesc, persisted: true, refundId: refundRow.id });
+		}
+	} catch (err) {
+		console.error('guestRefundResult error:', err?.message || err);
+		return res.status(200).json({ success: false, message: 'Internal server error processing refund result', details: String(err?.message || err) });
+	}
+};
+
+// --------------------------------------------------
 // b2cResult - handle B2C payout result callback
 // --------------------------------------------------
 const b2cResult = async (req, res) => {
@@ -799,9 +1066,15 @@ module.exports = {
 	stkQuery,
 	b2cPayment,
 	b2cResult,
+	guestRefund,
+	guestRefundResult,
 	// other helpers (keep default simple ack endpoints)
 	b2cQueueTimeout: (req, res) => {
 		console.log("B2C Queue Timeout", req.body);
+		return res.status(200).json({ message: "ok" });
+	},
+	guestRefundQueueTimeout: (req, res) => {
+		console.log("Guest Refund Queue Timeout", req.body);
 		return res.status(200).json({ message: "ok" });
 	},
 	b2cAccountBalance: async (req, res) => {

@@ -16,6 +16,9 @@ const {
 	b2cPayment,
 	b2cQueueTimeout,
 	b2cResult,
+	guestRefund,
+	guestRefundResult,
+	guestRefundQueueTimeout,
 	b2cAccountBalance,
 	accountBalanceResult,
 	accountBalanceQueueTimeout,
@@ -101,5 +104,24 @@ router.post("/b2c-check-transaction-queue", b2cCheckTransactionQueueTimeout);
  * POST /api/v1/payment/b2c-check-transaction-results
  */
 router.post("/b2c-check-transaction-results", b2cCheckTransactionResult);
+
+/**
+ * POST /api/v1/payment/guest-refund
+ * Initiate B2C refund to guest.
+ * Body: { phoneNumber, amount, guest_id, remarks }
+ */
+router.post("/guest-refund", darajaAuthMiddleware, guestRefund);
+
+/**
+ * POST /api/v1/payment/guest-refund-result
+ * Daraja will POST refund result callbacks here.
+ */
+router.post("/guest-refund-result", guestRefundResult);
+
+/**
+ * POST /api/v1/payment/guest-refund-queue-timeout
+ * Daraja will POST when refund queue times out.
+ */
+router.post("/guest-refund-queue-timeout", guestRefundQueueTimeout);
 
 module.exports = router;

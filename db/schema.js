@@ -88,6 +88,27 @@ const {
 	result_desc: text("result_desc"),
 	created_at: timestamp("created_at").defaultNow(),
   });
+
+  // M-Pesa refunds (B2C refunds to guests)
+  const mpesa_refunds = pgTable("mpesa_refunds", {
+	id: serial("id").primaryKey(),
+	guest_id: uuid("guest_id").notNull().references(() => profiles.id),
+	receiverPhoneNumber: text("receiverPhoneNumber"),
+	originator_conversation_id: varchar("originator_conversation_id", { length: 100 }),
+	conversation_id: varchar("conversation_id", { length: 100 }),
+	transaction_id: varchar("transaction_id", { length: 100 }),
+	transaction_receipt: varchar("transaction_receipt", { length: 100 }),
+	amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+	receiver_name: text("receiver_name"),
+	completed_at: timestamp("completed_at"),
+	b2c_recipient_is_registered: boolean("b2c_recipient_is_registered"),
+	b2c_charges_paid_funds: numeric("b2c_charges_paid_funds", { precision: 12, scale: 2 }),
+	result_code: integer("result_code"),
+	result_desc: text("result_desc"),
+	status: text("status").notNull().default("pending"),
+	created_at: timestamp("created_at").defaultNow(),
+	updated_at: timestamp("updated_at").defaultNow(),
+  });
   
   // booking_transactions - includes reservation_amount & commission_applied
   const booking_transactions = pgTable("booking_transactions", {
@@ -163,6 +184,7 @@ const {
 	bookings,
 	stk_payments,
 	b2c_payouts,
+	mpesa_refunds,
 	booking_transactions,
 	pending_stk,
 	payout_requests,
