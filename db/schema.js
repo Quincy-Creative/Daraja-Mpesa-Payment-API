@@ -1,14 +1,5 @@
 /**
  * db/schema.js
- *
- * This file defines the database schema using drizzle-orm for the application's core tables.
- * It exports table definitions for use throughout the backend, including:
- *   - profiles: user accounts and roles
- *   - bookings: reservation and payment details
- *   - (other tables defined below)
- *
- * Each table is defined with its columns, types, constraints, and default values.
- * This schema is used for query building, migrations, and type safety in the application.
  */
 const {
 	pgTable,
@@ -22,21 +13,21 @@ const {
 	serial,
 	varchar,
 	json,
-} = require("drizzle-orm/pg-core");
-
-const { sql } = require("drizzle-orm");
-
-// profiles (user table - provided earlier)
-const profiles = pgTable("profiles", {
+  } = require("drizzle-orm/pg-core");
+  
+  const { sql } = require("drizzle-orm");
+  
+  // profiles
+  const profiles = pgTable("profiles", {
 	id: uuid("id").primaryKey().notNull(),
 	email: text("email").notNull(),
 	role: text("role").notNull(),
 	created_at: timestamp("created_at").defaultNow(),
 	updated_at: timestamp("updated_at").defaultNow(),
-});
-
-// bookings (provided earlier)
-const bookings = pgTable("bookings", {
+  });
+  
+  // bookings
+  const bookings = pgTable("bookings", {
 	id: uuid("id").primaryKey().notNull(),
 	listing_id: uuid("listing_id").notNull(),
 	guest_id: uuid("guest_id").notNull(),
@@ -58,18 +49,17 @@ const bookings = pgTable("bookings", {
 	special_requests: text("special_requests"),
 	created_at: timestamp("created_at").defaultNow(),
 	updated_at: timestamp("updated_at").defaultNow(),
-});
-
-// STK payments
-const stk_payments = pgTable("stk_payments", {
+  });
+  
+  // STK payments
+  const stk_payments = pgTable("stk_payments", {
 	id: serial("id").primaryKey(),
-	guest_id: uuid("guest_id").notNull().references(() => profiles.id),
-	booking_id: uuid("booking_id").notNull().references(() => bookings.id),
-	host_id: uuid("host_id").notNull().references(() => profiles.id),
+	guest_id: uuid("guest_id").references(() => profiles.id),
+	booking_id: uuid("booking_id").references(() => bookings.id),
+	host_id: uuid("host_id").references(() => profiles.id),
 	is_reservation: boolean("is_reservation").default(false),
 	amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
-	// use varchar/text to avoid bigint runtime config issues
-	phone_number: varchar("phone_number", { length: 20 }).notNull(),
+	phone_number: varchar("phone_number", { length: 20 }),
 	mpesa_receipt: varchar("mpesa_receipt", { length: 50 }),
 	merchant_request_id: varchar("merchant_request_id", { length: 255 }),
 	checkout_request_id: varchar("checkout_request_id", { length: 255 }),
@@ -78,10 +68,10 @@ const stk_payments = pgTable("stk_payments", {
 	result_desc: text("result_desc"),
 	created_at: timestamp("created_at").defaultNow(),
 	updated_at: timestamp("updated_at").defaultNow(),
-});
-
-// B2C payouts
-const b2c_payouts = pgTable("b2c_payouts", {
+  });
+  
+  // B2C payouts
+  const b2c_payouts = pgTable("b2c_payouts", {
 	id: serial("id").primaryKey(),
 	host_id: uuid("host_id").notNull().references(() => profiles.id),
 	receiverPhoneNumber: text("receiverPhoneNumber"),
@@ -97,24 +87,25 @@ const b2c_payouts = pgTable("b2c_payouts", {
 	result_code: integer("result_code"),
 	result_desc: text("result_desc"),
 	created_at: timestamp("created_at").defaultNow(),
-});
-
-// booking_transactions - aggregates per booking + commission flags
-const booking_transactions = pgTable("booking_transactions", {
+  });
+  
+  // booking_transactions - includes reservation_amount & commission_applied
+  const booking_transactions = pgTable("booking_transactions", {
 	id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
 	booking_id: uuid("booking_id").notNull().references(() => bookings.id),
 	host_id: uuid("host_id").notNull().references(() => profiles.id),
 	reservation_amount: numeric("reservation_amount", { precision: 12, scale: 2 }).default("0"),
 	total_amount: numeric("total_amount", { precision: 12, scale: 2 }).default("0"),
+	full_amount: numeric("full_amount", { precision: 12, scale: 2 }).default("0"),
 	commission_amount: numeric("commission_amount", { precision: 12, scale: 2 }).default("0"),
 	commission_applied: boolean("commission_applied").default(false),
 	transaction_ids: json("transaction_ids").default(sql`'[]'::jsonb`),
 	created_at: timestamp("created_at").defaultNow(),
 	updated_at: timestamp("updated_at").defaultNow(),
-});
-
-// (optional helpers left intact if you use them, but not required for simplified flows)
-const pending_stk = pgTable("pending_stk", {
+  });
+  
+  // pending_stk
+  const pending_stk = pgTable("pending_stk", {
 	id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
 	guest_id: uuid("guest_id").notNull().references(() => profiles.id),
 	booking_id: uuid("booking_id").notNull().references(() => bookings.id),
@@ -125,9 +116,10 @@ const pending_stk = pgTable("pending_stk", {
 	is_reservation: boolean("is_reservation").default(false),
 	reservation_fee: numeric("reservation_fee", { precision: 10, scale: 2 }).default("0"),
 	created_at: timestamp("created_at").defaultNow(),
-});
-
-const payout_requests = pgTable("payout_requests", {
+  });
+  
+  // payout_requests
+  const payout_requests = pgTable("payout_requests", {
 	id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
 	host_id: uuid("host_id").notNull().references(() => profiles.id),
 	amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
@@ -139,9 +131,34 @@ const payout_requests = pgTable("payout_requests", {
 	status: text("status").default("initiated"),
 	created_at: timestamp("created_at").defaultNow(),
 	updated_at: timestamp("updated_at").defaultNow(),
-});
-
-module.exports = {
+  });
+  
+  /*
+   * Added admin_wallets and host_wallets definitions to match controller expectations.
+   * If you prefer managing wallets differently, adjust these accordingly.
+   */
+  const admin_wallets = pgTable("admin_wallets", {
+	id: serial("id").primaryKey(),
+	admin_id: uuid("admin_id").notNull().references(() => profiles.id),
+	balance: numeric("balance", { precision: 14, scale: 2 }).default("0").notNull(),
+	total_commission: numeric("total_commission", { precision: 14, scale: 2 }).default("0").notNull(),
+	payable_balance: numeric("payable_balance", { precision: 14, scale: 2 }).default("0").notNull(),
+	total_paid_out: numeric("total_paid_out", { precision: 14, scale: 2 }).default("0").notNull(),
+	created_at: timestamp("created_at").defaultNow(),
+	updated_at: timestamp("updated_at").defaultNow(),
+  });
+  
+  const host_wallets = pgTable("host_wallets", {
+	id: serial("id").primaryKey(),
+	host_id: uuid("host_id").notNull().references(() => profiles.id),
+	available_balance: numeric("available_balance", { precision: 14, scale: 2 }).default("0").notNull(),
+	pending_balance: numeric("pending_balance", { precision: 14, scale: 2 }).default("0").notNull(),
+	withdrawn_total: numeric("withdrawn_total", { precision: 14, scale: 2 }).default("0").notNull(),
+	created_at: timestamp("created_at").defaultNow(),
+	updated_at: timestamp("updated_at").defaultNow(),
+  });
+  
+  module.exports = {
 	profiles,
 	bookings,
 	stk_payments,
@@ -149,4 +166,8 @@ module.exports = {
 	booking_transactions,
 	pending_stk,
 	payout_requests,
-};
+	// new exports
+	admin_wallets,
+	host_wallets,
+  };
+  

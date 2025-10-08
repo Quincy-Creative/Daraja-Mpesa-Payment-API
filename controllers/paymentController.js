@@ -29,7 +29,7 @@ const { generateSecurityCredential } = require("../credentials/generateSecurityC
 
 const COMMISSION_RATE = 0.125; // 12.5%
 
-// security credential caching
+// security credential caching (used by B2C flows)
 let securityCredential = null;
 let securityCredentialPromise = null;
 async function ensureSecurityCredential() {
@@ -49,7 +49,7 @@ async function ensureSecurityCredential() {
 	return securityCredentialPromise;
 }
 
-// ---------------- helpers ----------------
+// helpers
 function parseMpesaTimestamp(input) {
 	if (!input) return new Date();
 	const s = String(input);
@@ -89,15 +89,12 @@ const STK_RESULT_CODE_MAP = {
 	1001: { status: 429, message: "Subscriber busy or session conflict" },
 };
 
-// ---------------- controller functions ----------------
-
-/**
- * sendStkPush - initiate STK push and insert an initial stk_payments row mapping
- */
+// --------------------------------------------------
+// sendStkPush - initiate and insert mapping
+// --------------------------------------------------
 const sendStkPush = async (req, res) => {
 	try {
 		const { phoneNumber, amount, guest_id, booking_id, host_id, booking_title, is_reservation = false } = req.body;
-
 		if (!phoneNumber || !amount || !guest_id || !booking_id || !host_id || !booking_title) {
 			return res.status(400).json({ error: "phoneNumber, amount, guest_id, booking_id, host_id and booking_title are required" });
 		}
@@ -129,7 +126,7 @@ const sendStkPush = async (req, res) => {
 		const merchantRequestId = data.MerchantRequestID || data.merchantRequestId || null;
 		const checkoutRequestId = data.CheckoutRequestID || data.checkoutRequestId || null;
 
-		// Insert initial mapping into stk_payments
+		// insert initial mapping; this is safe and useful for callback reconciliation
 		try {
 			await db.insert(stk_payments).values({
 				guest_id,
@@ -149,6 +146,7 @@ const sendStkPush = async (req, res) => {
 			});
 		} catch (err) {
 			console.error("Failed to insert initial stk_payments mapping:", err?.message || err);
+			// do not fail STK push because Daraja expects 200; log and continue
 		}
 
 		return res.status(200).json({ status: "success", message: "STK push initiated", data });
@@ -158,13 +156,9 @@ const sendStkPush = async (req, res) => {
 	}
 };
 
-/**
- * handleCallback - STK callback handler
- *
- * - updates/creates stk_payments
- * - credits admin_wallets and host_wallets for each payment
- * - upserts booking_transactions and applies commission once when booking total met
- */
+// --------------------------------------------------
+// handleCallback - handle STK result (main flow)
+// --------------------------------------------------
 const handleCallback = async (req, res) => {
 	try {
 		const callbackData = req.body;
@@ -194,7 +188,7 @@ const handleCallback = async (req, res) => {
 
 		const txDate = transactionDateRaw ? parseMpesaTimestamp(transactionDateRaw) : new Date();
 
-		// find existing stk_payments by checkoutRequestId or merchantRequestId
+		// find existing stk_payments mapping
 		let existingRows = [];
 		try {
 			existingRows = await db.select().from(stk_payments).where(eq(stk_payments.checkout_request_id, CheckoutRequestID)).limit(1);
@@ -213,7 +207,7 @@ const handleCallback = async (req, res) => {
 
 		let paymentRow = existingRows && existingRows.length ? existingRows[0] : null;
 
-		// idempotency: if mpesaReceipt exists anywhere, skip processing
+		// idempotency: if mpesaReceipt already exists in DB skip processing
 		if (mpesaReceipt) {
 			try {
 				const dup = await db.select().from(stk_payments).where(eq(stk_payments.mpesa_receipt, mpesaReceipt)).limit(1);
@@ -227,11 +221,11 @@ const handleCallback = async (req, res) => {
 			}
 		}
 
-		// If paymentRow exists -> update & handle booking_transactions + wallets in transaction
+		// If mapping exists, update it and perform booking_transactions + wallet updates in a transaction
 		if (paymentRow) {
 			try {
 				await db.transaction(async (tx) => {
-					// 1) update stk_payments row
+					// update stk_payments row (Drizzle)
 					const pk = Number(paymentRow.id);
 					if (!pk || Number.isNaN(pk)) throw new Error(`Invalid paymentRow.id: ${String(paymentRow.id)}`);
 
@@ -243,178 +237,217 @@ const handleCallback = async (req, res) => {
 						updated_at: new Date(),
 					}).where(eq(stk_payments.id, pk));
 
-					// always credit admin & host wallets for successful or failed? Only credit on success.
+					// Only process booking_transactions & wallets on success
 					if (ResultCode === 0 && paymentRow.booking_id) {
 						const bookingId = paymentRow.booking_id;
 						const hostId = paymentRow.host_id || null;
 
-						// fetch booking to get total_amount
+						// fetch booking to check totals
 						const bookingRows = await tx.select().from(bookings).where(eq(bookings.id, bookingId)).limit(1);
 						const booking = bookingRows && bookingRows.length ? bookingRows[0] : null;
 						const bookingTotal = booking ? Number(booking.total_amount || 0) : null;
 
-						// upsert or update booking_transactions
+						// find booking_transactions for booking
 						const btRows = await tx.select().from(booking_transactions).where(eq(booking_transactions.booking_id, bookingId)).limit(1);
 						const txIdsArray = mpesaReceipt ? [mpesaReceipt] : [];
 
-						// admin host wallets require ADMIN_ID
+						// admin id is required
 						const ADMIN_ID = process.env.ADMIN_ID_UUID;
 						if (!ADMIN_ID) throw new Error("ADMIN_ID_UUID environment variable not set");
 
 						if (btRows && btRows.length) {
-							// existing booking_transactions: append amount
-							const existingBT = btRows[0];
-							const existingTotal = Number(existingBT.total_amount || 0);
-							const newTotal = round2(existingTotal + amount);
+							// update existing booking_transactions (increment totals and append tx id)
+							// Using raw SQL for reliable arithmetic operations
+							await tx.execute(sql`
+                UPDATE booking_transactions
+                SET total_amount = booking_transactions.total_amount + ${amount},
+                    reservation_amount = booking_transactions.reservation_amount + ${paymentRow.is_reservation ? amount : 0},
+                    transaction_ids = booking_transactions.transaction_ids || ${JSON.stringify(txIdsArray)}::jsonb,
+                      updated_at = now()
+                WHERE booking_id = ${bookingId}
+              `);
 
-							await tx.update(booking_transactions).set({
-								total_amount: sql`booking_transactions.total_amount + ${amount}`,
-								transaction_ids: sql`booking_transactions.transaction_ids || ${JSON.stringify(txIdsArray)}::jsonb`,
-								updated_at: new Date(),
-							}).where(eq(booking_transactions.booking_id, bookingId));
+              // Upsert admin_wallet and host_wallet using Drizzle ORM
+              // admin balance += amount ; payable_balance += amount
+              const existingAdminWallet = await tx.select().from(admin_wallets).where(eq(admin_wallets.admin_id, ADMIN_ID)).limit(1);
+              if (existingAdminWallet && existingAdminWallet.length) {
+                await tx.update(admin_wallets)
+                  .set({
+                    balance: sql`${admin_wallets.balance} + ${amount}`,
+                    payable_balance: sql`${admin_wallets.payable_balance} + ${amount}`,
+                    updated_at: new Date(),
+                  })
+                  .where(eq(admin_wallets.admin_id, ADMIN_ID));
+              } else {
+                await tx.insert(admin_wallets).values({
+                  admin_id: ADMIN_ID,
+                  balance: amount,
+                  total_commission: 0,
+                  payable_balance: amount,
+                  total_paid_out: 0,
+                  created_at: new Date(),
+                  updated_at: new Date(),
+                });
+              }
 
-							// wallet updates for this incoming payment: admin receives amount and marks payable; host gets remaining_balance increased by amount
-							// ADMIN upsert: balance += amount, payable_balance += amount
-							await tx.execute(
-								`INSERT INTO public.admin_wallets (admin_id, balance, total_commission, payable_balance, created_at, updated_at)
-									VALUES ($1, $2, 0, $3, now(), now())
-									ON CONFLICT (admin_id) DO UPDATE
-									SET balance = admin_wallets.balance + $2,
-										payable_balance = admin_wallets.payable_balance + $3,
-										updated_at = now()`,
-								[ADMIN_ID, amount, amount]
-							);
+              // host wallet available_balance += amount
+              const existingHostWallet = await tx.select().from(host_wallets).where(eq(host_wallets.host_id, hostId)).limit(1);
+              if (existingHostWallet && existingHostWallet.length) {
+                await tx.update(host_wallets)
+                  .set({
+                    available_balance: sql`${host_wallets.available_balance} + ${amount}`,
+                    updated_at: new Date(),
+                  })
+                  .where(eq(host_wallets.host_id, hostId));
+              } else {
+                await tx.insert(host_wallets).values({
+                  host_id: hostId,
+                  available_balance: amount,
+                  pending_balance: 0,
+                  withdrawn_total: 0,
+                  created_at: new Date(),
+                  updated_at: new Date(),
+                });
+              }
 
-							// host_wallets upsert: remaining_balance += amount
-							await tx.execute(
-								`INSERT INTO public.host_wallets (host_id, remaining_balance, withdrawn, created_at, updated_at)
-									VALUES ($1, $2, 0, now(), now())
-									ON CONFLICT (host_id) DO UPDATE
-									SET remaining_balance = host_wallets.remaining_balance + $2,
-										updated_at = now()`,
-								[hostId, amount]
-							);
+              // Check commission application: if not yet applied and totals now meet booking total -> apply
+              // read current booking_transactions row again to compute prior values
+              const btNowRows = await tx.select().from(booking_transactions).where(eq(booking_transactions.booking_id, bookingId)).limit(1);
+              const btNow = (btNowRows && btNowRows.length) ? btNowRows[0] : null;
+              const newTotal = btNow ? Number(btNow.total_amount || 0) : null;
+              const priorCommissionAmount = btNow ? Number(btNow.commission_amount || 0) : 0;
+              const commissionAppliedFlag = btNow ? Boolean(btNow.commission_applied) : false;
 
-							// If commission not yet applied AND bookingTotal available AND newTotal >= bookingTotal -> apply commission
-							const commissionNotApplied = !existingBT.commission_applied;
-							if (commissionNotApplied && bookingTotal !== null && newTotal >= Number(bookingTotal)) {
-								const commission = round2(newTotal * COMMISSION_RATE);
-								// set commission_amount and commission_applied on booking_transactions
-								await tx.update(booking_transactions).set({
-									commission_amount: commission,
-									commission_applied: true,
-									updated_at: new Date(),
-								}).where(eq(booking_transactions.booking_id, bookingId));
-
-								// admin_wallets: total_commission += commission, payable_balance -= commission
-								await tx.execute(
-									`UPDATE public.admin_wallets
-										SET total_commission = total_commission + $1,
-											payable_balance = GREATEST(payable_balance - $1, 0),
-											updated_at = now()
-										WHERE admin_id = $2`,
-									[commission, ADMIN_ID]
-								);
-
-								// host_wallets: deduct commission from remaining_balance
-								await tx.execute(
-									`UPDATE public.host_wallets
-										SET remaining_balance = GREATEST(remaining_balance - $1, 0),
-											updated_at = now()
-										WHERE host_id = $2`,
-									[commission, hostId]
-								);
-							}
+              if (!commissionAppliedFlag && bookingTotal !== null && newTotal !== null && newTotal >= Number(bookingTotal)) {
+                const commission = round2(newTotal * COMMISSION_RATE);
+                // update booking_transactions
+                await tx.update(booking_transactions)
+                  .set({
+                    commission_amount: commission,
+                    commission_applied: true,
+                    updated_at: new Date(),
+                  })
+                  .where(eq(booking_transactions.booking_id, bookingId));
+                
+                // admin: total_commission += commission ; payable_balance -= commission
+                await tx.update(admin_wallets)
+                  .set({
+                    total_commission: sql`${admin_wallets.total_commission} + ${commission}`,
+                    payable_balance: sql`GREATEST(${admin_wallets.payable_balance} - ${commission}, 0)`,
+                    updated_at: new Date(),
+                  })
+                  .where(eq(admin_wallets.admin_id, ADMIN_ID));
+                
+                // host: available_balance -= commission
+                await tx.update(host_wallets)
+                  .set({
+                    available_balance: sql`GREATEST(${host_wallets.available_balance} - ${commission}, 0)`,
+                    updated_at: new Date(),
+                  })
+                  .where(eq(host_wallets.host_id, hostId));
+              }
 						} else {
-							// no booking_transactions row yet: insert
-							// decide if commission should be applied immediately (single full payment)
+							// no booking_transactions yet: insert one
 							const commissionApplied = (bookingTotal !== null && round2(amount) >= Number(bookingTotal));
 							const commissionAmount = commissionApplied ? round2(amount * COMMISSION_RATE) : 0;
 
-							const newBT = {
-								id: generateId(),
-								booking_id: bookingId,
-								host_id: hostId,
-								reservation_amount: paymentRow.is_reservation ? amount : 0,
-								total_amount: amount,
-								commission_amount: commissionAmount,
-								commission_applied: commissionApplied,
-								transaction_ids: txIdsArray,
-								created_at: new Date(),
-								updated_at: new Date(),
-							};
-							await tx.insert(booking_transactions).values(newBT);
+              const newBT = {
+                id: generateId(),
+                booking_id: bookingId,
+                host_id: hostId,
+                reservation_amount: paymentRow.is_reservation ? amount : 0,
+                total_amount: amount,
+                full_amount: bookingTotal || amount,
+                commission_amount: commissionAmount,
+                commission_applied: commissionApplied,
+                transaction_ids: txIdsArray,
+                created_at: new Date(),
+                updated_at: new Date(),
+              };
 
-							// wallet updates for this incoming payment:
-							const ADMIN_ID2 = process.env.ADMIN_ID_UUID;
-							if (!ADMIN_ID2) throw new Error("ADMIN_ID_UUID environment variable not set");
+              await tx.insert(booking_transactions).values(newBT);
 
-							// admin_wallet upsert: add full amount to balance and payable_balance
-							await tx.execute(
-								`INSERT INTO public.admin_wallets (admin_id, balance, total_commission, payable_balance, created_at, updated_at)
-									VALUES ($1, $2, 0, $3, now(), now())
-									ON CONFLICT (admin_id) DO UPDATE
-									SET balance = admin_wallets.balance + $2,
-										payable_balance = admin_wallets.payable_balance + $3,
-										updated_at = now()`,
-								[ADMIN_ID2, amount, amount]
-							);
+              // admin wallet upsert
+              const existingAdminWallet2 = await tx.select().from(admin_wallets).where(eq(admin_wallets.admin_id, ADMIN_ID)).limit(1);
+              if (existingAdminWallet2 && existingAdminWallet2.length) {
+                await tx.update(admin_wallets)
+                  .set({
+                    balance: sql`${admin_wallets.balance} + ${amount}`,
+                    payable_balance: sql`${admin_wallets.payable_balance} + ${amount}`,
+                    updated_at: new Date(),
+                  })
+                  .where(eq(admin_wallets.admin_id, ADMIN_ID));
+              } else {
+                await tx.insert(admin_wallets).values({
+                  admin_id: ADMIN_ID,
+                  balance: amount,
+                  total_commission: 0,
+                  payable_balance: amount,
+                  total_paid_out: 0,
+                  created_at: new Date(),
+                  updated_at: new Date(),
+                });
+              }
 
-							// host_wallet upsert: remaining_balance += amount
-							await tx.execute(
-								`INSERT INTO public.host_wallets (host_id, remaining_balance, withdrawn, created_at, updated_at)
-									VALUES ($1, $2, 0, now(), now())
-									ON CONFLICT (host_id) DO UPDATE
-									SET remaining_balance = host_wallets.remaining_balance + $2,
-										updated_at = now()`,
-								[hostId, amount]
-							);
+              // host wallet upsert
+              const existingHostWallet2 = await tx.select().from(host_wallets).where(eq(host_wallets.host_id, hostId)).limit(1);
+              if (existingHostWallet2 && existingHostWallet2.length) {
+                await tx.update(host_wallets)
+                  .set({
+                    available_balance: sql`${host_wallets.available_balance} + ${amount}`,
+                    updated_at: new Date(),
+                  })
+                  .where(eq(host_wallets.host_id, hostId));
+              } else {
+                await tx.insert(host_wallets).values({
+                  host_id: hostId,
+                  available_balance: amount,
+                  pending_balance: 0,
+                  withdrawn_total: 0,
+                  created_at: new Date(),
+                  updated_at: new Date(),
+                });
+              }
 
-							// if commissionApplied true (full payment done), immediately account for commission
-							if (commissionApplied && commissionAmount > 0) {
-								// admin total_commission += commission, payable_balance -= commission
-								await tx.execute(
-									`UPDATE public.admin_wallets
-										SET total_commission = total_commission + $1,
-											payable_balance = GREATEST(payable_balance - $1, 0),
-											updated_at = now()
-										WHERE admin_id = $2`,
-									[commissionAmount, ADMIN_ID2]
-								);
-
-								// host_wallets: deduct commission from remaining_balance
-								await tx.execute(
-									`UPDATE public.host_wallets
-										SET remaining_balance = GREATEST(remaining_balance - $1, 0),
-											updated_at = now()
-										WHERE host_id = $2`,
-									[commissionAmount, hostId]
-								);
-							}
+              // if commission applied right away (full payment reached), adjust admin total_commission and host remaining_balance
+              if (commissionApplied && commissionAmount > 0) {
+                await tx.update(admin_wallets)
+                  .set({
+                    total_commission: sql`${admin_wallets.total_commission} + ${commissionAmount}`,
+                    payable_balance: sql`GREATEST(${admin_wallets.payable_balance} - ${commissionAmount}, 0)`,
+                    updated_at: new Date(),
+                  })
+                  .where(eq(admin_wallets.admin_id, ADMIN_ID));
+                
+                await tx.update(host_wallets)
+                  .set({
+                    available_balance: sql`GREATEST(${host_wallets.available_balance} - ${commissionAmount}, 0)`,
+                    updated_at: new Date(),
+                  })
+                  .where(eq(host_wallets.host_id, hostId));
+              }
 						}
 
-						// Update bookings table's payment_status and is_reservation fields accordingly
-						if (paymentRow.is_reservation) {
-							await tx.execute(
-								`UPDATE public.bookings
-									SET payment_status = 'partial',
-										transaction_id = $1,
-										is_reservation = true,
-										updated_at = now()
-									WHERE id = $2`,
-								[mpesaReceipt, bookingId]
-							);
-						} else {
-							await tx.execute(
-								`UPDATE public.bookings
-									SET payment_status = 'paid',
-										transaction_id = $1,
-										is_reservation = false,
-										updated_at = now()
-									WHERE id = $2`,
-								[mpesaReceipt, bookingId]
-							);
-						}
+            // Update booking payment_status
+            if (paymentRow.is_reservation) {
+              await tx.update(bookings)
+                .set({
+                  payment_status: 'partial',
+                  transaction_id: mpesaReceipt,
+                  is_reservation: true,
+                  updated_at: new Date(),
+                })
+                .where(eq(bookings.id, bookingId));
+            } else {
+              await tx.update(bookings)
+                .set({
+                  payment_status: 'paid',
+                  transaction_id: mpesaReceipt,
+                  is_reservation: false,
+                  updated_at: new Date(),
+                })
+                .where(eq(bookings.id, bookingId));
+            }
 					} // end ResultCode === 0 and booking_id
 				}); // end transaction
 			} catch (err) {
@@ -429,7 +462,7 @@ const handleCallback = async (req, res) => {
 				});
 			}
 		} else {
-			// no mapping: insert an audit-only stk_payments row (we do not attempt wallet changes)
+			// mapping not found — insert audit row
 			try {
 				await db.insert(stk_payments).values({
 					guest_id: null,
@@ -453,7 +486,6 @@ const handleCallback = async (req, res) => {
 			console.warn("No stk_payments mapping found for CheckoutRequestID or MerchantRequestID", CheckoutRequestID, MerchantRequestID);
 		}
 
-		// Final response ack to Daraja (they expect 200)
 		const mapped = STK_RESULT_CODE_MAP[ResultCode] || { status: 200, message: ResultDesc || "Unknown" };
 		return res.status(200).json({
 			success: ResultCode === 0,
@@ -463,7 +495,6 @@ const handleCallback = async (req, res) => {
 		});
 	} catch (err) {
 		console.error("handleCallback unexpected error:", err?.message || err);
-		// Always ack with 200 to avoid retries; include details in body
 		return res.status(200).json({
 			success: false,
 			code: -1,
@@ -473,9 +504,9 @@ const handleCallback = async (req, res) => {
 	}
 };
 
-/**
- * stkQuery - query STK status
- */
+// --------------------------------------------------
+// stkQuery - query STK status
+// --------------------------------------------------
 const stkQuery = async (req, res) => {
 	try {
 		const { checkoutRequestId } = req.body;
@@ -502,23 +533,25 @@ const stkQuery = async (req, res) => {
 	}
 };
 
-/**
- * b2cPayment - initiate B2C and persist minimal b2c_payouts row only if initiation accepted
- */
+// --------------------------------------------------
+// b2cPayment - initiate B2C payout
+// --------------------------------------------------
 const b2cPayment = async (req, res) => {
 	try {
 		const { phoneNumber, amount, host_id, remarks } = req.body;
 		if (!phoneNumber || !amount || !host_id) {
-			return res.status(400).json({ success: false, error: "phoneNumber, amount, host_id required" });
+			return res.status(400).json({ success: false, error: 'phoneNumber, amount, host_id required' });
 		}
-		const formattedPhone = phoneNumber.startsWith("0") ? `254${phoneNumber.slice(1)}` : phoneNumber;
 
+		const formattedPhone = phoneNumber.startsWith('0') ? `254${phoneNumber.slice(1)}` : phoneNumber;
+
+		// Ensure security credential
 		let securityCred;
 		try {
 			securityCred = await ensureSecurityCredential();
 		} catch (err) {
-			console.error("Security credential generation failed:", err?.message || err);
-			return res.status(500).json({ success: false, error: "Failed to generate security credential" });
+			console.error('Security credential generation failed:', err?.message || err);
+			return res.status(500).json({ success: false, error: 'Failed to generate security credential' });
 		}
 
 		const localRequestId = generateId();
@@ -526,7 +559,7 @@ const b2cPayment = async (req, res) => {
 		const requestBody = {
 			InitiatorName: process.env.INITIATOR_NAME,
 			SecurityCredential: securityCred,
-			CommandID: "BusinessPayment",
+			CommandID: 'BusinessPayment',
 			Amount: amount,
 			PartyA: process.env.SHORTCODE,
 			PartyB: formattedPhone,
@@ -536,30 +569,39 @@ const b2cPayment = async (req, res) => {
 			Occasion: `Payout-${localRequestId}`,
 		};
 
-		const response = await axios.post(`${process.env.BASE_URL}/mpesa/b2c/v1/paymentrequest`, requestBody, {
-			headers: { Authorization: `Bearer ${req.darajaToken}` },
-			timeout: 20000,
-		});
+		// Call Daraja
+		const response = await axios.post(
+			`${process.env.BASE_URL}/mpesa/b2c/v1/paymentrequest`,
+			requestBody,
+			{
+				headers: { Authorization: `Bearer ${req.darajaToken}` },
+				timeout: 20000,
+			}
+		);
 
 		const remote = response.data || {};
-		const responseCode = String(remote.ResponseCode ?? remote.responseCode ?? "");
-		const responseDesc = remote.ResponseDescription ?? remote.ResponseDesc ?? "";
 
-		if (responseCode !== "0") {
+		// Many daraja responses use "ResponseCode" either as string "0" or number 0
+		const responseCode = String(remote.ResponseCode ?? remote.responseCode ?? '');
+		const responseDesc = remote.ResponseDescription ?? remote.ResponseDesc ?? remote.ResponseDescription ?? '';
+
+		// If initiation failed, do not insert anything. Return error to caller with code.
+		if (responseCode !== '0') {
 			return res.status(400).json({
 				success: false,
 				code: responseCode,
-				message: responseDesc || "B2C initiation failed",
+				message: responseDesc || 'B2C initiation failed',
 				daraja: remote,
 			});
 		}
 
-		// persist minimal b2c_payouts
+		// At this point initiation accepted by Daraja. Persist a minimal row including conversation IDs.
 		const originator = remote.OriginatorConversationID ?? remote.originatorConversationID ?? null;
 		const conversation = remote.ConversationID ?? remote.conversationID ?? null;
 
 		let insertedRow = null;
 		try {
+			// Insert minimal row containing host_id, amount, receiverPhoneNumber and the conversation ids
 			await db.insert(b2c_payouts).values({
 				host_id,
 				receiverPhoneNumber: formattedPhone,
@@ -577,16 +619,23 @@ const b2cPayment = async (req, res) => {
 				created_at: new Date(),
 			});
 
-			const rows = await db.select().from(b2c_payouts).where(eq(b2c_payouts.originator_conversation_id, originator)).limit(1);
+			// fetch inserted row to return its id (some Drizzle builds don't return inserted rows)
+			const rows = await db
+				.select()
+				.from(b2c_payouts)
+				.where(eq(b2c_payouts.originator_conversation_id, originator))
+				.limit(1);
+
 			if (rows && rows.length) insertedRow = rows[0];
 		} catch (err) {
-			console.error("Failed to insert b2c_payouts after successful initiation:", err?.message || err);
+			console.error('Failed to insert b2c_payouts after successful initiation:', err?.message || err);
+			// We still return success since Daraja accepted the request, but inform client that DB insert failed
 			return res.status(200).json({
 				success: true,
 				initiated: true,
 				persisted: false,
 				daraja: remote,
-				error: "Failed to persist b2c_payouts row (check server logs).",
+				error: 'Failed to persist b2c_payouts row (check server logs).',
 			});
 		}
 
@@ -598,45 +647,47 @@ const b2cPayment = async (req, res) => {
 			daraja: remote,
 		});
 	} catch (err) {
-		console.error("b2cPayment error:", err?.response?.data || err.message || err);
+		console.error('b2cPayment error:', err?.response?.data || err.message || err);
 		return res.status(500).json({ success: false, error: err?.response?.data || err.message || String(err) });
 	}
 };
 
-/**
- * b2cResult - handle B2C result callback
- * - updates b2c_payouts
- * - on success: reduce admin_wallets.balance & payable_balance, reduce host_wallet.remaining_balance, increase host_wallet.withdrawn
- */
+// --------------------------------------------------
+// b2cResult - handle B2C payout result callback
+// --------------------------------------------------
 const b2cResult = async (req, res) => {
 	try {
 		const received = req.body;
-		console.log("B2C Result received:", JSON.stringify(received, null, 2));
+		console.log('B2C Result received:', JSON.stringify(received, null, 2));
 
 		const result = received?.Result || received?.data?.Result || received;
-		if (!result || typeof result !== "object") {
-			console.warn("Invalid B2C result payload:", received);
-			return res.status(200).json({ success: false, message: "Invalid B2C result payload" });
+		if (!result || typeof result !== 'object') {
+			console.warn('Invalid B2C result payload:', received);
+			// respond 200 to Daraja; client can check logs / UI for details
+			return res.status(200).json({ success: false, message: 'Invalid B2C result payload' });
 		}
 
-		const { OriginatorConversationID, ConversationID, TransactionID, ResultParameters } = result;
+		const { OriginatorConversationID, ConversationID, TransactionID } = result;
+		const ResultParameters = result.ResultParameters || {};
 		const paramsArray = ResultParameters?.ResultParameter || [];
 		const params = {};
 		for (const p of paramsArray) params[p.Key] = p.Value;
 
+		// Normalize common names/values
 		const resultCode = Number(result.ResultCode ?? params.ResultCode ?? 0);
-		const resultDesc = result.ResultDesc ?? params.ResultDesc ?? "";
+		const resultDesc = result.ResultDesc ?? params.ResultDesc ?? '';
 
+		// Transaction amount may be under different keys
 		const amount = Number(params.TransactionAmount ?? params.Amount ?? 0);
 		const transactionReceipt = params.TransactionReceipt ?? params.ReceiptNo ?? TransactionID ?? null;
-		const receiverName = params.ReceiverPartyPublicName ?? params.CreditPartyName ?? "";
+		const receiverName = params.ReceiverPartyPublicName ?? params.CreditPartyName ?? '';
 		const completedAtRaw = params.TransactionCompletedDateTime ?? params.FinalisedTime ?? params.InitiatedTime ?? null;
 		const completedAt = completedAtRaw ? parseMpesaTimestamp(completedAtRaw) : new Date();
 
-		const recipientRegistered = String(params.B2CRecipientIsRegisteredCustomer ?? "").toUpperCase() === "Y";
-		const chargesPaidFunds = Number(params.B2CChargesPaidAccountAvailableFunds ?? 0);
+		const recipientRegistered = String(params.B2CRecipientIsRegisteredCustomer ?? '').toUpperCase() === 'Y';
+		const chargesPaidFunds = Number(params.B2CChargesPaidAccountAvailableFunds ?? params.B2CChargesPaidAccountAvailableFunds ?? 0);
 
-		// find the b2c_payouts row inserted earlier (by originator/conversation/phone+amount fallback)
+		// Find the associated b2c_payouts row (expect it to exist because we inserted on initiation success)
 		let payoutRow = null;
 		try {
 			if (OriginatorConversationID) {
@@ -647,10 +698,10 @@ const b2cResult = async (req, res) => {
 				const rows2 = await db.select().from(b2c_payouts).where(eq(b2c_payouts.conversation_id, ConversationID)).limit(1);
 				if (rows2 && rows2.length) payoutRow = rows2[0];
 			}
-
+			// fallback: try match by receiverPhoneNumber + amount for the most recent uncompleted row
 			if (!payoutRow && receiverName) {
 				const phoneToken = String(receiverName).split(/\s|-/)[0] || null;
-				const cleanPhone = phoneToken ? phoneToken.replace(/\D/g, "") : null;
+				const cleanPhone = phoneToken ? phoneToken.replace(/\D/g, '') : null;
 				if (cleanPhone) {
 					const rows3 = await db
 						.select()
@@ -664,43 +715,43 @@ const b2cResult = async (req, res) => {
 				}
 			}
 		} catch (err) {
-			console.error("Error finding b2c_payouts row in callback:", err?.message || err);
+			console.error('Error finding b2c_payouts row in callback:', err?.message || err);
 		}
 
 		if (!payoutRow) {
-			console.warn("No matching b2c_payouts row found for callback. Originator/Conversation/Receiver/Amount:", {
+			console.warn('No matching b2c_payouts row found for callback. Originator/Conversation/Receiver/Amount:', {
 				OriginatorConversationID,
 				ConversationID,
 				receiverName,
 				amount,
 			});
+			// Must ACK Daraja with 200; report to logs / UI for manual reconciliation
 			return res.status(200).json({
 				success: resultCode === 0,
 				code: resultCode,
 				message: resultDesc,
 				persisted: false,
-				note: "No matching b2c_payouts row found to update. Check initiation step.",
+				note: 'No matching b2c_payouts row found to update. Check initiation step.',
 			});
 		}
 
-		// idempotency: check transaction id already exist
+		// Idempotency: if transaction_id already recorded, skip
 		try {
-			if (TransactionID) {
-				const existing = await db.select().from(b2c_payouts).where(eq(b2c_payouts.transaction_id, TransactionID)).limit(1);
-				if (existing && existing.length) {
-					console.log("Duplicate B2C result already processed:", TransactionID);
-					return res.status(200).json({ success: true, code: resultCode, message: "Already processed", persisted: true });
-				}
+			const existing = await db.select().from(b2c_payouts).where(eq(b2c_payouts.transaction_id, TransactionID)).limit(1);
+			if (existing && existing.length) {
+				console.log('Duplicate B2C result already processed:', TransactionID);
+				return res.status(200).json({ success: true, code: resultCode, message: 'Already processed', persisted: true });
 			}
 		} catch (err) {
-			console.error("Error checking existing transaction id in b2c_payouts:", err?.message || err);
+			console.error('Error checking existing transaction id in b2c_payouts:', err?.message || err);
+			// continue
 		}
 
-		// If success: update payout row and update admin & host wallets accordingly (debit admin -> payout to host)
+		// If the resultCode is success (0) we write the detailed fields; otherwise write only result_code/result_desc for audit.
 		if (resultCode === 0) {
 			try {
-				await db.transaction(async (tx) => {
-					await tx.update(b2c_payouts).set({
+				await db.update(b2c_payouts)
+					.set({
 						transaction_id: TransactionID ?? payoutRow.transaction_id,
 						transaction_receipt: transactionReceipt ?? payoutRow.transaction_receipt,
 						receiver_name: receiverName ?? payoutRow.receiver_name,
@@ -710,55 +761,34 @@ const b2cResult = async (req, res) => {
 						result_code: resultCode,
 						result_desc: resultDesc,
 						updated_at: new Date(),
-					}).where(eq(b2c_payouts.id, payoutRow.id));
-
-					// update admin_wallets and host_wallets
-					const ADMIN_ID = process.env.ADMIN_ID_UUID;
-					if (!ADMIN_ID) throw new Error("ADMIN_ID_UUID environment variable not set");
-
-					// admin wallets: balance -= amount, payable_balance -= amount
-					await tx.execute(
-						`UPDATE public.admin_wallets
-							SET balance = GREATEST(balance - $1, 0),
-								payable_balance = GREATEST(payable_balance - $1, 0),
-								updated_at = now()
-							WHERE admin_id = $2`,
-						[amount, ADMIN_ID]
-					);
-
-					// host wallets: remaining_balance = GREATEST(remaining_balance - amount, 0), withdrawn += amount
-					await tx.execute(
-						`INSERT INTO public.host_wallets (host_id, remaining_balance, withdrawn, created_at, updated_at)
-							VALUES ($1, 0, $2, now(), now())
-							ON CONFLICT (host_id) DO UPDATE
-							SET remaining_balance = GREATEST(host_wallets.remaining_balance - $2, 0),
-								withdrawn = host_wallets.withdrawn + $2,
-								updated_at = now()`,
-						[payoutRow.host_id, amount]
-					);
-				}); // end transaction
+					})
+					.where(eq(b2c_payouts.id, payoutRow.id));
 			} catch (err) {
-				console.error("b2cResult transaction error:", err?.message || err);
+				console.error('Failed to update b2c_payouts with success result:', err?.message || err);
 				return res.status(200).json({ success: false, code: resultCode, message: resultDesc, persisted: false, error: String(err?.message || err) });
 			}
 
 			return res.status(200).json({ success: true, code: resultCode, message: resultDesc, persisted: true, payoutId: payoutRow.id });
 		} else {
-			// failed result -> update result_code/result_desc for auditing
+			// persist result_code/result_desc for failed/partial requests (audit)
 			try {
-				await db.update(b2c_payouts).set({
-					result_code: resultCode,
-					result_desc: resultDesc,
-					updated_at: new Date(),
-				}).where(eq(b2c_payouts.id, payoutRow.id));
+				await db.update(b2c_payouts)
+					.set({
+						result_code: resultCode,
+						result_desc: resultDesc,
+						updated_at: new Date(),
+					})
+					.where(eq(b2c_payouts.id, payoutRow.id));
 			} catch (err) {
-				console.error("Failed to update b2c_payouts with failure result:", err?.message || err);
+				console.error('Failed to update b2c_payouts with failure result:', err?.message || err);
+				return res.status(200).json({ success: false, code: resultCode, message: resultDesc, persisted: false, error: String(err?.message || err) });
 			}
+
 			return res.status(200).json({ success: false, code: resultCode, message: resultDesc, persisted: true, payoutId: payoutRow.id });
 		}
 	} catch (err) {
-		console.error("b2cResult unexpected error:", err?.message || err);
-		return res.status(200).json({ success: false, message: "B2C result received but server error processing it. Check logs." });
+		console.error('b2cResult error:', err?.message || err);
+		return res.status(200).json({ success: false, message: 'Internal server error processing B2C result', details: String(err?.message || err) });
 	}
 };
 
