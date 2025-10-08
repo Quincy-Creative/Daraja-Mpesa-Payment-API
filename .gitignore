@@ -19,6 +19,9 @@ pnpm-lock.yaml
 # !.env.example
 
 # Old files
+# Environment variables
+# .env
+# .env.*
 old-payment-controller.txt
 controllers/old-payment-controller.txt
 
