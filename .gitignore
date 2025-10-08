@@ -7,9 +7,18 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
-# Environment variables
+# Environment variables (NEVER commit these!)
 .env
-.env.*
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+# Note: Keep .env.example out if it contains real values
+# Uncomment the line below if you want to keep .env.example as a template
+# !.env.example
+
+# Old files
 old-payment-controller.txt
 controllers/old-payment-controller.txt
 
