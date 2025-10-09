@@ -116,6 +116,13 @@ export type Database = {
             foreignKeyName: "admin_transactions_booking_id_fkey"
             columns: ["booking_id"]
             isOneToOne: false
+            referencedRelation: "booking_analytics"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "admin_transactions_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
             referencedRelation: "bookings"
             referencedColumns: ["id"]
           },
@@ -256,6 +263,86 @@ export type Database = {
           },
         ]
       }
+      booking_ratings: {
+        Row: {
+          booking_id: string
+          cleanliness: number | null
+          comment: string
+          communication: number | null
+          created_at: string | null
+          furniture_quality: number | null
+          guest_id: string | null
+          host_id: string | null
+          id: string
+          location: number | null
+          overall_rating: number
+          rated_by: string
+          security: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          booking_id: string
+          cleanliness?: number | null
+          comment: string
+          communication?: number | null
+          created_at?: string | null
+          furniture_quality?: number | null
+          guest_id?: string | null
+          host_id?: string | null
+          id?: string
+          location?: number | null
+          overall_rating: number
+          rated_by: string
+          security?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          booking_id?: string
+          cleanliness?: number | null
+          comment?: string
+          communication?: number | null
+          created_at?: string | null
+          furniture_quality?: number | null
+          guest_id?: string | null
+          host_id?: string | null
+          id?: string
+          location?: number | null
+          overall_rating?: number
+          rated_by?: string
+          security?: number | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "booking_ratings_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
+            referencedRelation: "booking_analytics"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_ratings_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
+            referencedRelation: "bookings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_ratings_guest_id_fkey"
+            columns: ["guest_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_ratings_host_id_fkey"
+            columns: ["host_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       booking_transactions: {
         Row: {
           booking_id: string
@@ -301,6 +388,13 @@ export type Database = {
             foreignKeyName: "booking_transactions_booking_id_fkey"
             columns: ["booking_id"]
             isOneToOne: false
+            referencedRelation: "booking_analytics"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_transactions_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
             referencedRelation: "bookings"
             referencedColumns: ["id"]
           },
@@ -315,6 +409,7 @@ export type Database = {
       }
       bookings: {
         Row: {
+          cancellation_reason: string | null
           check_in: string
           check_out: string
           created_at: string | null
@@ -326,7 +421,9 @@ export type Database = {
           is_reservation: boolean | null
           listing_id: string
           nights: number | null
+          payment_deadline: string | null
           payment_status: string
+          rejection_reason: string | null
           reservation_fee: number | null
           service_fees: number | null
           special_requests: string | null
@@ -338,6 +435,7 @@ export type Database = {
           updated_at: string | null
         }
         Insert: {
+          cancellation_reason?: string | null
           check_in: string
           check_out: string
           created_at?: string | null
@@ -349,7 +447,9 @@ export type Database = {
           is_reservation?: boolean | null
           listing_id: string
           nights?: number | null
+          payment_deadline?: string | null
           payment_status?: string
+          rejection_reason?: string | null
           reservation_fee?: number | null
           service_fees?: number | null
           special_requests?: string | null
@@ -361,6 +461,7 @@ export type Database = {
           updated_at?: string | null
         }
         Update: {
+          cancellation_reason?: string | null
           check_in?: string
           check_out?: string
           created_at?: string | null
@@ -372,7 +473,9 @@ export type Database = {
           is_reservation?: boolean | null
           listing_id?: string
           nights?: number | null
+          payment_deadline?: string | null
           payment_status?: string
+          rejection_reason?: string | null
           reservation_fee?: number | null
           service_fees?: number | null
           special_requests?: string | null
@@ -587,6 +690,13 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "host_transactions_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
+            referencedRelation: "booking_analytics"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "host_transactions_booking_id_fkey"
             columns: ["booking_id"]
@@ -967,6 +1077,74 @@ export type Database = {
           },
         ]
       }
+      mpesa_refunds: {
+        Row: {
+          amount: number
+          b2c_charges_paid_funds: number | null
+          b2c_recipient_is_registered: boolean | null
+          completed_at: string | null
+          conversation_id: string | null
+          created_at: string | null
+          guest_id: string
+          id: number
+          originator_conversation_id: string | null
+          receiver_name: string | null
+          receiverphonenumber: string | null
+          result_code: number | null
+          result_desc: string | null
+          status: string
+          transaction_id: string | null
+          transaction_receipt: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          amount: number
+          b2c_charges_paid_funds?: number | null
+          b2c_recipient_is_registered?: boolean | null
+          completed_at?: string | null
+          conversation_id?: string | null
+          created_at?: string | null
+          guest_id: string
+          id?: number
+          originator_conversation_id?: string | null
+          receiver_name?: string | null
+          receiverphonenumber?: string | null
+          result_code?: number | null
+          result_desc?: string | null
+          status?: string
+          transaction_id?: string | null
+          transaction_receipt?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          amount?: number
+          b2c_charges_paid_funds?: number | null
+          b2c_recipient_is_registered?: boolean | null
+          completed_at?: string | null
+          conversation_id?: string | null
+          created_at?: string | null
+          guest_id?: string
+          id?: number
+          originator_conversation_id?: string | null
+          receiver_name?: string | null
+          receiverphonenumber?: string | null
+          result_code?: number | null
+          result_desc?: string | null
+          status?: string
+          transaction_id?: string | null
+          transaction_receipt?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mpesa_refunds_guest_id_fkey"
+            columns: ["guest_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       payout_requests: {
         Row: {
           amount: number
@@ -1055,6 +1233,13 @@ export type Database = {
           reservation_fee?: number | null
         }
         Relationships: [
+          {
+            foreignKeyName: "pending_stk_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
+            referencedRelation: "booking_analytics"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "pending_stk_booking_id_fkey"
             columns: ["booking_id"]
@@ -1188,6 +1373,13 @@ export type Database = {
             foreignKeyName: "stk_payments_booking_id_fkey"
             columns: ["booking_id"]
             isOneToOne: false
+            referencedRelation: "booking_analytics"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "stk_payments_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
             referencedRelation: "bookings"
             referencedColumns: ["id"]
           },
@@ -1284,9 +1476,43 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      booking_analytics: {
+        Row: {
+          created_at: string | null
+          guest_rating: number | null
+          has_cancellation_reason: boolean | null
+          has_rejection_reason: boolean | null
+          host_rating: number | null
+          hours_until_deadline: number | null
+          id: string | null
+          is_reservation: boolean | null
+          payment_deadline: string | null
+          payment_status: string | null
+          reservation_fee: number | null
+          status: string | null
+          total_amount: number | null
+          updated_at: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
+      auto_cancel_expired_bookings: {
+        Args: Record<PropertyKey, never>
+        Returns: undefined
+      }
+      calculate_property_rating: {
+        Args: { property_id: string }
+        Returns: {
+          avg_cleanliness: number
+          avg_communication: number
+          avg_furniture_quality: number
+          avg_location: number
+          avg_overall: number
+          avg_security: number
+          total_reviews: number
+        }[]
+      }
       ensure_admin_wallet_exists: {
         Args: { admin_uuid: string }
         Returns: undefined
