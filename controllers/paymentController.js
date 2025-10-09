@@ -24,6 +24,7 @@ const {
 	profiles,
 	admin_wallets,
 	host_wallets,
+	official_mpesa_balances,
 } = require("../db/schema");
 
 const { generateSecurityCredential } = require("../credentials/generateSecurityCredential");
@@ -1119,14 +1120,119 @@ module.exports = {
 				console.warn("Invalid account balance result payload");
 				return res.status(400).json({ error: "Invalid payload" });
 			}
+
+			// Extract metadata
+			const originatorConversationID = Result.OriginatorConversationID || null;
+			const conversationID = Result.ConversationID || null;
+			const transactionID = Result.TransactionID || null;
+			
 			const paramsArr = Result.ResultParameters?.ResultParameter || [];
+			let accountBalanceString = null;
+			let boCompletedTimeRaw = null;
+
 			for (const p of paramsArr) {
-				if (p.Key === "AccountBalance") {
-					const parsed = parseAccountBalanceString(p.Value);
-					return res.status(200).json({ status: "success", accounts: parsed });
+				if (p.Key === "AccountBalance") accountBalanceString = p.Value;
+				if (p.Key === "BOCompletedTime") boCompletedTimeRaw = p.Value;
+			}
+
+			if (!accountBalanceString) {
+				console.warn("No AccountBalance found in result");
+				return res.status(200).json({ status: "success", data: received, persisted: false });
+			}
+
+			// Parse account balances
+			const parsed = parseAccountBalanceString(accountBalanceString);
+			
+			// Map account names to database column names
+			const accountMap = {
+				"Working Account": "working_account",
+				"Utility Account": "utility_account",
+				"Charges Paid Account": "charges_paid_account",
+				"Merchant Account": "merchant_account",
+				"Airtime Purchase Account": "airtime_purchase_account",
+				"Organization Settlement Account": "organization_settlement_account",
+				"Loan Disbursement Account": "loan_disbursement_account",
+				"Advanced Deduction Account": "advanced_deduction_account",
+				"Savings Deduction Account": "savings_deduction_account",
+				"SFC Device Insurance Claims Disbursement Account": "sfc_device_insurance_claims_account",
+			};
+
+			// Build update object
+			const updateData = {
+				working_account: 0,
+				utility_account: 0,
+				charges_paid_account: 0,
+				merchant_account: 0,
+				airtime_purchase_account: 0,
+				organization_settlement_account: 0,
+				loan_disbursement_account: 0,
+				advanced_deduction_account: 0,
+				savings_deduction_account: 0,
+				sfc_device_insurance_claims_account: 0,
+				currency: "KES",
+				transaction_id: transactionID,
+				originator_conversation_id: originatorConversationID,
+				conversation_id: conversationID,
+				bo_completed_time: boCompletedTimeRaw ? parseMpesaTimestamp(String(boCompletedTimeRaw)) : new Date(),
+				updated_at: new Date(),
+			};
+
+			// Map parsed accounts to update data
+			for (const [accountName, amount] of Object.entries(parsed)) {
+				const columnName = accountMap[accountName];
+				if (columnName) {
+					updateData[columnName] = amount;
 				}
 			}
-			return res.status(200).json({ status: "success", data: received });
+
+			// Upsert: Check if row exists (we expect only one row with id=1)
+			let existingRow = null;
+			try {
+				const rows = await db.select().from(official_mpesa_balances).limit(1);
+				if (rows && rows.length) existingRow = rows[0];
+			} catch (err) {
+				console.error("Error checking existing official_mpesa_balances:", err?.message || err);
+			}
+
+			if (existingRow) {
+				// Update existing row
+				try {
+					await db.update(official_mpesa_balances)
+						.set(updateData)
+						.where(eq(official_mpesa_balances.id, existingRow.id));
+					console.log("Updated official_mpesa_balances row:", existingRow.id);
+				} catch (err) {
+					console.error("Failed to update official_mpesa_balances:", err?.message || err);
+					return res.status(200).json({ 
+						status: "success", 
+						accounts: parsed, 
+						persisted: false, 
+						error: String(err?.message || err) 
+					});
+				}
+			} else {
+				// Insert new row (first time)
+				try {
+					updateData.created_at = new Date();
+					await db.insert(official_mpesa_balances).values(updateData);
+					console.log("Inserted new official_mpesa_balances row");
+				} catch (err) {
+					console.error("Failed to insert official_mpesa_balances:", err?.message || err);
+					return res.status(200).json({ 
+						status: "success", 
+						accounts: parsed, 
+						persisted: false, 
+						error: String(err?.message || err) 
+					});
+				}
+			}
+
+			return res.status(200).json({ 
+				status: "success", 
+				accounts: parsed, 
+				persisted: true,
+				balances: updateData 
+			});
 		} catch (err) {
 			console.error("accountBalanceResult error:", err?.message || err);
 			return res.status(500).json({ error: "Error processing account balance result", details: err?.message || String(err) });

@@ -183,6 +183,28 @@ const {
 	updated_at: timestamp("updated_at").defaultNow(),
   });
   
+  // Official M-Pesa account balances (single row, always updated)
+  const official_mpesa_balances = pgTable("official_mpesa_balances", {
+	id: serial("id").primaryKey(),
+	working_account: numeric("working_account", { precision: 14, scale: 2 }).default("0"),
+	utility_account: numeric("utility_account", { precision: 14, scale: 2 }).default("0"),
+	charges_paid_account: numeric("charges_paid_account", { precision: 14, scale: 2 }).default("0"),
+	merchant_account: numeric("merchant_account", { precision: 14, scale: 2 }).default("0"),
+	airtime_purchase_account: numeric("airtime_purchase_account", { precision: 14, scale: 2 }).default("0"),
+	organization_settlement_account: numeric("organization_settlement_account", { precision: 14, scale: 2 }).default("0"),
+	loan_disbursement_account: numeric("loan_disbursement_account", { precision: 14, scale: 2 }).default("0"),
+	advanced_deduction_account: numeric("advanced_deduction_account", { precision: 14, scale: 2 }).default("0"),
+	savings_deduction_account: numeric("savings_deduction_account", { precision: 14, scale: 2 }).default("0"),
+	sfc_device_insurance_claims_account: numeric("sfc_device_insurance_claims_account", { precision: 14, scale: 2 }).default("0"),
+	currency: text("currency").default("KES"),
+	transaction_id: text("transaction_id"),
+	originator_conversation_id: text("originator_conversation_id"),
+	conversation_id: text("conversation_id"),
+	bo_completed_time: timestamp("bo_completed_time"),
+	created_at: timestamp("created_at").defaultNow(),
+	updated_at: timestamp("updated_at").defaultNow(),
+  });
+  
   module.exports = {
 	profiles,
 	bookings,
@@ -195,5 +217,6 @@ const {
 	// new exports
 	admin_wallets,
 	host_wallets,
+	official_mpesa_balances,
   };
   
