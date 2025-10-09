@@ -93,7 +93,7 @@ const {
   const mpesa_refunds = pgTable("mpesa_refunds", {
 	id: serial("id").primaryKey(),
 	guest_id: uuid("guest_id").notNull().references(() => profiles.id),
-	receiverPhoneNumber: text("receiverPhoneNumber"),
+	receiverphonenumber: text("receiverphonenumber"),
 	originator_conversation_id: varchar("originator_conversation_id", { length: 100 }),
 	conversation_id: varchar("conversation_id", { length: 100 }),
 	transaction_id: varchar("transaction_id", { length: 100 }),

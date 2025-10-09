@@ -721,15 +721,15 @@ const guestRefund = async (req, res) => {
 
 		let insertedRow = null;
 		try {
-			// Insert minimal row containing guest_id, amount, receiverPhoneNumber and the conversation ids
+			// Insert minimal row containing guest_id, amount, receiverphonenumber and the conversation ids
 			await db.insert(mpesa_refunds).values({
 				guest_id,
-				receiverPhoneNumber: formattedPhone,
+				receiverphonenumber: formattedPhone,
 				originator_conversation_id: originator,
 				conversation_id: conversation,
 				transaction_id: null,
 				transaction_receipt: null,
-				amount,
+				amount: Number(amount),
 				receiver_name: null,
 				completed_at: null,
 				b2c_recipient_is_registered: null,
@@ -820,7 +820,7 @@ const guestRefundResult = async (req, res) => {
 				const rows2 = await db.select().from(mpesa_refunds).where(eq(mpesa_refunds.conversation_id, ConversationID)).limit(1);
 				if (rows2 && rows2.length) refundRow = rows2[0];
 			}
-			// fallback: try match by receiverPhoneNumber + amount for the most recent uncompleted row
+			// fallback: try match by receiverphonenumber + amount for the most recent uncompleted row
 			if (!refundRow && receiverName) {
 				const phoneToken = String(receiverName).split(/\s|-/)[0] || null;
 				const cleanPhone = phoneToken ? phoneToken.replace(/\D/g, '') : null;
@@ -828,7 +828,7 @@ const guestRefundResult = async (req, res) => {
 					const rows3 = await db
 						.select()
 						.from(mpesa_refunds)
-						.where(eq(mpesa_refunds.receiverPhoneNumber, cleanPhone))
+						.where(eq(mpesa_refunds.receiverphonenumber, cleanPhone))
 						.where(eq(mpesa_refunds.amount, amount))
 						.where(eq(mpesa_refunds.result_code, null))
 						.orderBy(sql`created_at DESC`)
