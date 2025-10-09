@@ -618,6 +618,7 @@ const b2cPayment = async (req, res) => {
 				result_code: null,
 				result_desc: null,
 				created_at: new Date(),
+				updated_at: new Date(),
 			});
 
 			// fetch inserted row to return its id (some Drizzle builds don't return inserted rows)

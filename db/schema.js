@@ -47,6 +47,9 @@ const {
 	currency: text("currency").default("KES"),
 	transaction_id: text("transaction_id"),
 	special_requests: text("special_requests"),
+	cancellation_reason: text("cancellation_reason"),
+	rejection_reason: text("rejection_reason"),
+	payment_deadline: timestamp("payment_deadline"),
 	created_at: timestamp("created_at").defaultNow(),
 	updated_at: timestamp("updated_at").defaultNow(),
   });
@@ -59,7 +62,7 @@ const {
 	host_id: uuid("host_id").references(() => profiles.id),
 	is_reservation: boolean("is_reservation").default(false),
 	amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
-	phone_number: varchar("phone_number", { length: 20 }),
+	phone_number: numeric("phone_number"),
 	mpesa_receipt: varchar("mpesa_receipt", { length: 50 }),
 	merchant_request_id: varchar("merchant_request_id", { length: 255 }),
 	checkout_request_id: varchar("checkout_request_id", { length: 255 }),
@@ -87,6 +90,7 @@ const {
 	result_code: integer("result_code"),
 	result_desc: text("result_desc"),
 	created_at: timestamp("created_at").defaultNow(),
+	updated_at: timestamp("updated_at").defaultNow(),
   });
 
   // M-Pesa refunds (B2C refunds to guests)
