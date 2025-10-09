@@ -88,6 +88,7 @@ const STK_RESULT_CODE_MAP = {
 	1019: { status: 410, message: "Transaction expired" },
 	9999: { status: 500, message: "Unknown push error" },
 	1001: { status: 429, message: "Subscriber busy or session conflict" },
+	4999: { status: 500, message: "Request failed" },
 };
 
 // --------------------------------------------------
